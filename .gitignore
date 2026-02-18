@@ -1,1 +1,8 @@
-/.vscode/
+*.zip
+*.gz
+__pycache__/
+*.pyc
+check_zips.py
+create_mock_data.py
+test_import.py
+.venv/

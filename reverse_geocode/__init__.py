@@ -9,6 +9,7 @@ import os
 from scipy.spatial import cKDTree as KDTree
 import sys
 import zipfile
+import shutil
 from urllib.request import urlopen
 
 if sys.platform == "win32":
@@ -21,6 +22,8 @@ GEOCODE_URL = "http://download.geonames.org/export/dump/cities1000.zip"
 GEOCODE_FILENAME = "cities1000.txt"
 STATE_CODE_URL = "http://download.geonames.org/export/dump/admin1CodesASCII.txt"
 COUNTY_CODE_URL = "https://download.geonames.org/export/dump/admin2Codes.txt"
+ALTERNATE_NAMES_URL = 'http://download.geonames.org/export/dump/alternateNames.zip'
+ALTERNATE_NAMES_FILENAME = 'alternateNames.txt'
 
 
 class Singleton(type):
@@ -74,21 +77,57 @@ class GeocodeData(metaclass=Singleton):
     def _download_geocode(self):
         """Download geocode data from http://download.geonames.org/export/dump/"""
 
+        def download_url(url, local_filename):
+            if not os.path.exists(local_filename):
+                logging.info('Downloading: {}'.format(url))
+                with urlopen(url) as response, open(local_filename, 'wb') as out_file:
+                    shutil.copyfileobj(response, out_file)
+            return local_filename
+
         def geocode_csv_reader(data):
             return csv.reader(data.decode("utf-8").splitlines(), delimiter="\t")
 
-        #with zipfile.ZipFile(open('cities1000.zip', 'rb')) as geocode_zipfile:
-        with zipfile.ZipFile(
-            io.BytesIO(urlopen(GEOCODE_URL).read())
-        ) as geocode_zipfile:
+        # Download files first
+        geocode_zip_path = download_url(GEOCODE_URL, "cities1000.zip")
+        # alternateNames.zip is large, so we definitely want to cache it on disk
+        alternate_names_zip_path = download_url(ALTERNATE_NAMES_URL, "alternateNames.zip")
+
+        with zipfile.ZipFile(geocode_zip_path) as geocode_zipfile:
             geocode_reader = geocode_csv_reader(geocode_zipfile.read(GEOCODE_FILENAME))
 
         state_reader = geocode_csv_reader(urlopen(STATE_CODE_URL).read())
         county_reader = geocode_csv_reader(urlopen(COUNTY_CODE_URL).read())
+        
+        # Download and parse Arabic names
+        arabic_names = {}
+        try:
+            with zipfile.ZipFile(alternate_names_zip_path) as alt_zipfile:
+                # We need to stream the reading of the text file inside the zip too if it's huge
+                # alternateNames.txt can be > 1GB uncompressed. 
+                # zipfile.open returns a file-like object we can iterate over.
+                with alt_zipfile.open(ALTERNATE_NAMES_FILENAME) as f:
+                    # wrapper for utf-8 decoding
+                    text_file = io.TextIOWrapper(f, encoding='utf-8')
+                    alt_reader = csv.reader(text_file, delimiter='\t')
+                    for row in alt_reader:
+                        # Columns: alternateNameId, geonameId, isolanguage, alternateName, ...
+                        if len(row) > 3 and row[2] == 'ar':
+                            geoname_id = row[1]
+                            arabic_name = row[3]
+                            try:
+                                # Ensure we don't pick very short names or garbage if possible, but basic check:
+                                if arabic_name:
+                                    arabic_names[geoname_id] = arabic_name
+                            except:
+                                pass
+        except Exception as e:
+            logging.error(f"Failed to parse alternate names: {e}")
+
         return (
             geocode_reader,
             self._gen_code_map(state_reader),
             self._gen_code_map(county_reader),
+            arabic_names
         )
 
     def _gen_code_map(self, state_reader):
@@ -105,16 +144,20 @@ class GeocodeData(metaclass=Singleton):
                 locations = json.loads(gz.read())
         else:
             print('Downloading geocode data')
-            geocode_reader, state_code_map, county_code_map = self._download_geocode()
+            geocode_reader, state_code_map, county_code_map, arabic_names = self._download_geocode()
 
             # extract coordinates into more compact JSON for faster loading
             locations = []
             for row in geocode_reader:
+                geoname_id = row[0]
                 latitude = float(row[4])
                 longitude = float(row[5])
                 country_code = row[8]
                 if latitude and longitude and country_code:
                     city = row[1]
+                    if geoname_id in arabic_names:
+                        city = arabic_names[geoname_id]
+                    
                     state_code = row[8] + "." + row[10]
                     state = state_code_map.get(state_code)
                     county_code = state_code + "." + row[11]
