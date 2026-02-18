@@ -1,8 +1,24 @@
+# Data files (downloaded at runtime)
 *.zip
-*.gz
+cities1000.txt
+alternateNames.txt
+
+# Compiled cache
 __pycache__/
 *.pyc
-check_zips.py
-create_mock_data.py
-test_import.py
+*.pyo
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -9,7 +9,6 @@ import os
 from scipy.spatial import cKDTree as KDTree
 import sys
 import zipfile
-import shutil
 from urllib.request import urlopen
 
 if sys.platform == "win32":
@@ -80,8 +79,21 @@ class GeocodeData(metaclass=Singleton):
         def download_url(url, local_filename):
             if not os.path.exists(local_filename):
                 logging.info('Downloading: {}'.format(url))
-                with urlopen(url) as response, open(local_filename, 'wb') as out_file:
-                    shutil.copyfileobj(response, out_file)
+                with urlopen(url) as response:
+                    total = int(response.headers.get('Content-Length', 0))
+                    downloaded = 0
+                    with open(local_filename, 'wb') as out_file:
+                        while True:
+                            chunk = response.read(8192)
+                            if not chunk:
+                                break
+                            out_file.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = downloaded * 100 / total
+                                print(f'\r  {local_filename}: {downloaded/1024/1024:.1f} MB / {total/1024/1024:.1f} MB ({pct:.0f}%)', end='', flush=True)
+                        if total:
+                            print()  # newline after progress
             return local_filename
 
         def geocode_csv_reader(data):
@@ -100,26 +112,30 @@ class GeocodeData(metaclass=Singleton):
         
         # Download and parse Arabic names
         arabic_names = {}
+        arabic_preferred = set()  # Track which IDs already have a preferred name
         try:
             with zipfile.ZipFile(alternate_names_zip_path) as alt_zipfile:
-                # We need to stream the reading of the text file inside the zip too if it's huge
-                # alternateNames.txt can be > 1GB uncompressed. 
-                # zipfile.open returns a file-like object we can iterate over.
                 with alt_zipfile.open(ALTERNATE_NAMES_FILENAME) as f:
-                    # wrapper for utf-8 decoding
                     text_file = io.TextIOWrapper(f, encoding='utf-8')
                     alt_reader = csv.reader(text_file, delimiter='\t')
+                    count = 0
                     for row in alt_reader:
-                        # Columns: alternateNameId, geonameId, isolanguage, alternateName, ...
+                        # Columns: alternateNameId, geonameId, isolanguage, alternateName,
+                        #          isPreferredName(4), isShortName(5), isColloquial(6), isHistoric(7)
                         if len(row) > 3 and row[2] == 'ar':
                             geoname_id = row[1]
                             arabic_name = row[3]
-                            try:
-                                # Ensure we don't pick very short names or garbage if possible, but basic check:
-                                if arabic_name:
-                                    arabic_names[geoname_id] = arabic_name
-                            except:
-                                pass
+                            is_preferred = len(row) > 4 and row[4] == '1'
+                            if not arabic_name:
+                                continue
+                            # Preferred names always win; otherwise keep first found
+                            if is_preferred:
+                                arabic_names[geoname_id] = arabic_name
+                                arabic_preferred.add(geoname_id)
+                            elif geoname_id not in arabic_names:
+                                arabic_names[geoname_id] = arabic_name
+                            count += 1
+                    logging.info(f'Loaded {count} Arabic name entries for {len(arabic_names)} locations')
         except Exception as e:
             logging.error(f"Failed to parse alternate names: {e}")
 

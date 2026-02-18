@@ -54,7 +54,6 @@ To filter for larger cities a minimum population can be set. Using a minimum pop
 ```
 
 
-```
 
 ## Offline Usage and Local Database
 
